@@ -1,0 +1,9 @@
+{
+  "corpus": "llm",
+  "corpus_fingerprint": "b0e0e312a5f64761",
+  "seed": 2026,
+  "n_writes": 1000,
+  "num_keys": 40,
+  "unique_texts": 766,
+  "generated_at": "2026-09-20T16:20:22"
+}

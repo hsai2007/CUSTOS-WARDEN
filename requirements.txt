@@ -1,0 +1,8 @@
+sentence-transformers
+regex
+matplotlib
+pandas
+numpy
+langgraph
+anthropic
+pytest

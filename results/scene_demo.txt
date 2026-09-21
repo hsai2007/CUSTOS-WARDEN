@@ -1,0 +1,14 @@
+WARDEN scene demo (sample writes)
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+stored value                                             incoming value                                           true class     predicted class  action   cost ms
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+The offline mode will not ship this quarter.             Just so you know, the offline mode isn’t slated to be r  duplicate      duplicate        drop     0.16   
+The beta rollout ships on Saturday.                      The beta rollout ships on Saturday at 10 am PST after Q  refinement     refinement       merge    0.10   
+The dark‑mode rollout won’t ship this quarter.           Dark‑mode rollout now ships this quarter after the engi  update         contradiction    blocked  0.15   
+The data migration ships on Saturday.                    The data migration ships on Thursday.                    contradiction  contradiction    blocked  0.10   
+The infra budget has moved to 285.                       The infra budget is now 365, superseding the previous f  update         contradiction    blocked  0.10   
+The audit log feature will ship this quarter.            Audit logs are slated for release this quarter.          duplicate      duplicate        drop     0.07   
+The dark‑mode rollout won’t ship this quarter.           The dark‑mode rollout won’t ship this quarter, it’s del  refinement     refinement       merge    0.09   
+Onboarding revamp now ships Monday instead of Sunday du  Onboarding revamp now ships Sunday instead of Monday be  update         update           apply    0.40   
+The partner integration will ship on Sunday. | The part  Just FYI, the partner integration will be shipped on Th  duplicate      contradiction    blocked  0.21   
+The onboarding revamp has moved to Wednesday for launch  Just so you know, the onboarding revamp is scheduled to  duplicate      duplicate        drop     0.10   

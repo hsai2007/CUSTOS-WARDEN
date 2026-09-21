@@ -1,0 +1,10 @@
+M7 agent demo (LangGraph agents through the gateway)
+SCRIPTED: agent claims below are hardcoded strings, not LLM-generated. No live LLM call anywhere in this run (no ANTHROPIC_API_KEY; see DECISIONS.md D7).
+-----------------------------------------------------------------------------------------------
+agent        claim                                          predicted class  action   escalated
+-----------------------------------------------------------------------------------------------
+agent_alpha  The vendor contract renewal ships on Friday.   bootstrap        apply    False    
+agent_alpha  The vendor contract renewal ships on Friday,   refinement       merge    False    
+agent_beta   The vendor contract renewal ships on Monday.   contradiction    blocked  False    
+agent_alpha  The vendor contract renewal has been moved to  update           apply    True     
+agent_beta   The vendor contract renewal ships on Monday.   contradiction    blocked  False    

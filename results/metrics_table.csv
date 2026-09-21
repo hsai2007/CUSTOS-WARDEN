@@ -1,0 +1,16 @@
+Metric,Target,No gating,Cosine only,WARDEN,Status
+False facts surviving in store,< 5%,100.0%,73.1%,15.5%,MISSED
+Honest writes wrongly blocked,< 10%,0.0%,1.1%,22.1%,MISSED
+Four-class accuracy,> 74.3%,n/a,30.8%,64.8%,MISSED
+Worst per-class F1,> 0.70,n/a,0.1,0.3,MISSED
+Duplicate F1,report,n/a,0.2,0.8,n/a (report only)
+Refinement F1,report,n/a,0.4,0.8,n/a (report only)
+Update F1,report,n/a,0.2,0.3,n/a (report only)
+Contradiction F1,report,n/a,0.1,0.5,n/a (report only)
+Classification cost p50,< 10 ms,n/a,19.91,0.12,MET
+Classification cost p95,< 50 ms,n/a,27.78,1175.54,MISSED
+  - fast path p50 / p95 (ms),report,n/a,19.91 / 27.78,0.12 / 0.26,n/a (report only)
+  - escalated p50 / p95 (ms),report,n/a,n/a / n/a,1572.71 / 30157.99,n/a (report only)
+LLM escalation rate,< 15%,n/a,0.0%,7.1%,MET
+"Throughput, writes/s",> 100,202456.7,23.0,1.8,MISSED
+False facts via correctly-classified write,report,n/a,11.4%,5.7%,n/a (report only)
