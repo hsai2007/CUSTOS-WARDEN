@@ -132,6 +132,7 @@ Generated text and adjudicator decisions are cached under `data/`, so **the publ
 ```bash
 pytest tests/ -q                     # 87 tests
 
+python -m warden.demo m1             #This is an example to run a single module.
 python -m warden.demo all            # per-module live demo, offline, seconds
 python -m warden.demo m5fix          # the benchmark defect, before vs after
 
