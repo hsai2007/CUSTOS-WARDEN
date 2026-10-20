@@ -152,19 +152,109 @@ def demo_m6():
         print("   (run `python -m warden.generate_results` first)")
 
 
-def demo_m7():
-    head("M7 - AGENT LAYER", "two LangGraph agents; one gets visibly blocked")
-    from warden.agents import run_demo
+def _warm_up(model):
+    """Load the trained model before the demo starts, quietly, so no write is
+    charged the 10-20 s load time and no library warnings hit the projector."""
+    import os
+    import warnings
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    warnings.filterwarnings("ignore")
+    try:
+        from transformers.utils import logging as hf_logging
+        hf_logging.set_verbosity_error()
+        hf_logging.disable_progress_bar()
+    except Exception:
+        pass
+    t = time.perf_counter()
+    model.classify("warm up", "warm up")
+    model._total = 0                     # do not count the warm-up in the escalation rate
+    print(f"   model loaded in {time.perf_counter() - t:.1f}s\n")
 
-    for log in run_demo():
-        flag = "  <-- BLOCKED" if log.action == "blocked" else ""
-        print(f"   {log.agent:<12} {log.predicted_class:<14} {log.action:<9} {log.claim[:36]}{flag}")
+
+def demo_m7():
+    head("M7 - AGENT LAYER", "two LangGraph agents write through the gateway; the trained model judges each write")
+    from warden.agents import run_demo
+    from warden.gateway import WardenGateway
+    from warden.model_classifier import ModelFastPath
+
+    print("   loading trained model (DeBERTa-v3-small, update margin 3)...")
+    model = ModelFastPath()
+    _warm_up(model)
+    gateway = WardenGateway(model)
+    for i, log in enumerate(run_demo(gateway), 1):
+        flag = "   <-- BLOCKED" if log.action == "blocked" else ""
+        print(f"\n   {i}. {log.agent:<12} {log.predicted_class:<14} -> {log.action}{flag}")
+        print(f"      \"{log.claim}\"")
+    final = gateway.store.read("agents::vendor_contract_ship_date")
+    print(f"\n   final stored value (v{final.version}): {final.value}")
     print("\n   NOTE: agent claims are scripted, not LLM-generated (DECISIONS.md D16).")
+
+
+def demo_m7llm():
+    head("M7 + SLOW PATH", "trained model decides; only doubtful updates go to the LLM judge")
+    from warden.agents import SHARED_KEY, make_agent_graph
+    from warden.classifier import LLMOracle
+    from warden.gateway import WardenGateway
+    from warden.model_classifier import ModelFastPath
+
+    class TracedModel(ModelFastPath):
+        """Same model; also remembers the last scores so we can print the margin."""
+        last = None
+
+        def _logits(self, stored_text, incoming_text):
+            self.last = super()._logits(stored_text, incoming_text)
+            return self.last
+
+    oracle = LLMOracle()
+    model = TracedModel(oracle=oracle)
+    print(f"   fast path: DeBERTa-v3-small, update margin {model.margin:g}")
+    print(f"   slow path: {oracle.model_id} (answers from data/llm_oracle_cache.json when cached)")
+    _warm_up(model)
+    gateway = WardenGateway(model)
+    graph = make_agent_graph(gateway)
+
+    turns = [
+        ("agent_alpha", "The vendor contract renewal ships on Friday."),
+        ("agent_alpha", "The vendor contract renewal ships on Friday, pending final legal sign-off."),
+        ("agent_beta", "The vendor contract renewal ships on Monday."),
+        ("agent_alpha", "The vendor contract renewal has been moved to Wednesday."),
+        ("agent_beta", "The vendor contract renewal ships on Monday."),
+        ("agent_alpha", "Legal pushed the vendor contract renewal to next Tuesday."),
+    ]
+    try:
+        for i, (agent, claim) in enumerate(turns, 1):
+            model.last = None
+            t = time.perf_counter()
+            r = graph.invoke({"agent": agent, "key": SHARED_KEY, "claim": claim, "result": None})["result"]
+            ms = (time.perf_counter() - t) * 1000
+            flag = "   <-- BLOCKED" if r.action == "blocked" else ""
+            print(f"\n   {i}. {agent:<12} {r.predicted_class:<14} -> {r.action}{flag}")
+            print(f"      \"{claim}\"")
+            if model.last is None:
+                print("      first write: nothing stored yet, saved directly")
+                continue
+            top = max(model.last, key=model.last.get)
+            gap = model.last["update"] - model.last["contradiction"]
+            if r.escalated:
+                route = f"model said update but gap {gap:.1f} < {model.margin:g} -> LLM judge decided {r.predicted_class}"
+            elif top == "update":
+                route = f"model said update, gap {gap:.1f} >= {model.margin:g} -> fast path"
+            else:
+                route = f"model said {top} -> fast path"
+            print(f"      {route}   ({ms:.0f} ms)")
+    finally:
+        oracle.cache.flush()      # save new LLM answers so the next run is offline
+
+    final = gateway.store.read(SHARED_KEY)
+    print(f"\n   final stored value (v{final.version}): {final.value}")
+    print(f"   LLM calls this run: {oracle.calls_made} (0 = all answers came from the cache)")
+    print(f"   escalation rate: {model.escalation_rate*100:.0f}% of judged writes")
 
 
 DEMOS = {
     "m1": demo_m1, "m2": demo_m2, "m3": demo_m3, "m4": demo_m4,
     "m5": demo_m5, "m5fix": demo_m5_fix, "m6": demo_m6, "m7": demo_m7,
+    "m7llm": demo_m7llm,
 }
 ORDER = ["m1", "m2", "m5", "m5fix", "m6", "m3", "m4", "m7"]
 
@@ -174,7 +264,7 @@ def main():
     names = ORDER if which == "all" else [which]
     for n in names:
         if n not in DEMOS:
-            print(f"unknown demo {n!r}; choose from: {', '.join(ORDER)} or 'all'")
+            print(f"unknown demo {n!r}; choose from: {', '.join(ORDER)}, m7llm, or 'all'")
             return
         t = time.perf_counter()
         DEMOS[n]()

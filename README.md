@@ -15,64 +15,139 @@ When several agents write to one memory store, the naive behaviour is last-write
 
 ---
 
-## Architecture: two tiers
+## Architecture: trained fast path + optional LLM slow path
 
-The design principle is that **most writes should never cost an LLM call**.
+The design principle is that **most writes should never cost an LLM call**. Every write is classified by a small trained model on the local CPU. Only a *doubtful update* can leave the fast path.
 
 ```
-incoming write
+incoming write + stored value (same key)
       │
       ▼
-┌─────────────────────────────────────────┐
-│ FAST PATH  — regex facts + embeddings   │   93% of writes · 0.12 ms
-│                                         │
-│ facts agree            → duplicate      │
-│ facts agree + detail   → refinement     │
-│ facts differ, no       → contradiction  │
-│   change-language                       │
-└──────────────┬──────────────────────────┘
-               │ facts differ AND the claim
-               │ carries change-language
+┌──────────────────────────────────────────────┐
+│ FAST PATH — fine-tuned DeBERTa-v3-small      │   every write · ~200 ms CPU
+│ cross-encoder, 4 output classes              │   no API key, no network
+│                                              │
+│ duplicate / refinement / contradiction       │
+│   → final                                    │
+│ update → must pass the update margin:        │
+│   z(update) − z(contradiction) ≥ 3           │
+└──────────────┬───────────────────────────────┘
+               │ predicted update, but gap < 3  (doubtful)
                ▼
-┌─────────────────────────────────────────┐
-│ SLOW PATH  — LLM adjudicator            │   7% of writes · 1.6 s
-│ "real supersession, or a flat conflict   │
-│  wearing update clothing?"               │
-└─────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│ SLOW PATH (optional) — LLM judge             │   ~1.7 s per call
+│ no LLM attached → doubtful update is blocked │
+└──────────────────────────────────────────────┘
 ```
 
-Only the genuinely ambiguous band escalates. A claim like *"The mobile release is now scheduled for Monday"* carries change-language but may be a fabrication — no regex can tell, so it goes to the model.
+**Why the margin?** Applying a false "update" writes a false fact that every later reader sees. Blocking a true update only costs a retry. So the gate is biased against `update`: the model must beat the contradiction score by 3 logits, otherwise the write is blocked (or escalated). The margin only acts when the model predicts `update`; duplicate and refinement decisions are never touched.
+
+The previous fast path (regex fact extraction + embeddings, 0.12 ms) is still in `warden/classifier.py` as the baseline.
 
 ---
 
 ## Results
 
-Measured on 1000 LLM-generated writes (seed 2026, corpus fingerprint `b0e0e312a5f64761`).
+### Locked test set — 511 writes on topics never seen in training
 
-| Metric | Target | No gating | Cosine only | **WARDEN** | |
+| Metric | Regex + LLM (before) | **Trained model, margin 3** |
+|---|---|---|
+| Four-class accuracy | 64.2% | **85.3%** |
+| Macro F1 | 0.574 | **0.822** |
+| Duplicate / Refinement F1 | 0.760 / 0.778 | **0.947 / 0.935** |
+| Update / Contradiction F1 | 0.234 / 0.524 | **0.663 / 0.741** |
+| Contradictions let through as update | 12.0% | **8.4%** |
+| True updates blocked | 73.3% | **42.6%** |
+
+The baseline is replayed from its cached LLM decisions on the same 511 writes, so both systems see identical inputs.
+
+### Full gate — all 1000 writes (seed 2026)
+
+| Metric | Target | No gating | Cosine only | Regex + LLM | **Trained model** |
 |---|---|---|---|---|---|
-| False facts surviving in store | < 5% | 100% | 73.1% | **15.5%** | MISSED |
-| Honest writes wrongly blocked | < 10% | 0% | 1.1% | **22.1%** | MISSED |
-| Four-class accuracy | > 74.3% | n/a | 30.8% | **64.8%** | MISSED |
-| Worst per-class F1 | > 0.70 | n/a | 0.1 | **0.3** | MISSED |
-| Duplicate / Refinement F1 | report | n/a | 0.2 / 0.4 | **0.8 / 0.8** | |
-| Update / Contradiction F1 | report | n/a | 0.2 / 0.1 | **0.3 / 0.5** | |
-| Fast-path p50 / p95 | report | n/a | 19.9 / 27.8 ms | **0.12 / 0.26 ms** | |
-| Escalated p50 / p95 | report | n/a | n/a | **1.6 s / 30 s** | |
-| LLM escalation rate | < 15% | n/a | 0% | **7.1%** | MET |
-| Throughput | > 100/s | 202457 | 23.0 | **1.8** | MISSED |
+| Four-class accuracy | > 74.3% | n/a | 30.8% | 64.8% | **87.3%** — MET |
+| Macro F1 | report | n/a | n/a | n/a | **0.844** |
+| Worst per-class F1 | > 0.70 | n/a | 0.1 | 0.3 | **0.73** — MET |
+| Honest writes wrongly blocked | < 10% | 0% | 1.1% | 22.1% | **9.2%** — MET |
+| False facts surviving in store | < 5% | 100% | 73.1% | 15.5% | **23.3%** — MISSED |
+| LLM calls per write | < 15% | 0% | 0% | 7.1% | **0%** — MET |
+| Classify latency p50 / p95 | report | n/a | 19.9 / 27.8 ms | 0.12 ms / 30 s | **200 / 352 ms** |
+| Throughput (sequential) | > 100/s | 202457 | 23.0 | 1.8 | **4.5** — MISSED |
 
-Targets come from [ConflictRAG (arXiv 2605.17301)](https://arxiv.org/abs/2605.17301). **No threshold was tuned to hit a target** — every number is reported as measured, and most of them miss.
+Trained-model numbers come from `python -m warden.eval_model` (no LLM attached, doubtful updates blocked), written to `results/model_fastpath/metrics.json` and `writes.csv`. Targets come from [ConflictRAG (arXiv 2605.17301)](https://arxiv.org/abs/2605.17301); no threshold was tuned to hit a target.
 
-### What works
+### What improved
 
-WARDEN cuts false facts surviving from **100% → 15.5%** and more than doubles the embedding-similarity baseline's accuracy (30.8% → 64.8%). Duplicate and refinement detection both reach 0.8 F1. The fast path resolves 93% of writes in 0.12 ms.
+- Accuracy **64.8% → 87.3%**, and every per-class F1 is now above 0.70. Update F1 went from 0.3 to 0.73.
+- Honest writes wrongly blocked **22.1% → 9.2%**. The old gate was safe mainly because it blocked most true updates.
+- No network on the write path. Throughput is 2.5× the old pipeline because nothing waits for an API.
 
-### What doesn't, and why
+### What did not, and why
 
-**Update recall is poor (F1 0.3)** — 151 of 216 genuine updates are misread as contradictions. The fast path recognises supersession through a fixed phrase list (`moved to`, `pushed to`, `revised to`), but real writing says *"is now 23 due to a surge in ticket volume"*. This single weakness drives both headline misses: over-blocking updates is why 22.1% of honest writes are rejected, and also why false-facts-surviving looks as low as it does.
+**False facts surviving rose from 15.5% to 23.3%.** Of the 193 false writes, 45 entered the store:
 
-**Throughput and p95 miss by design constraints, not bugs.** A network adjudicator on 7% of writes cannot reach 100 writes/s sequentially. The fast-path numbers are the ones that describe the part of the system under our control.
+| How the false write got in | Count |
+|---|---|
+| A *false refinement* the model correctly labelled `refinement`, so it was merged | 25 |
+| A contradiction the model called `update` | 12 |
+| A false update applied as an update | 5 |
+| A false refinement called `update` | 3 |
+
+Most of the gap is false refinements: the class is right, but the added detail is wrong. No sentence-pair classifier can see that; it needs an outside fact source. The old gate scored lower on this metric partly because it blocked 22.1% of honest writes.
+
+**Latency.** ~200 ms per write is far slower than the 0.12 ms regex. Batching and int8 weights are the next steps.
+
+---
+
+## The trained fast path
+
+| | |
+|---|---|
+| Base model | `cross-encoder/nli-deberta-v3-small` (DeBERTa-v3-small, ~140M parameters, already trained for NLI) |
+| Head | replaced with a 4-class head: duplicate, refinement, update, contradiction |
+| Training data | 20,000 public pairs (5,000 per class) + ~2,400 labelled writes from the WARDEN generator |
+| Hardware | trained on a free Kaggle notebook; runs on CPU |
+| Weights | `models/slow_stage_v3b/` (567 MB, not in git — see below) |
+
+**Public sources, mapped to the four classes with written rules:**
+
+| Class | Sources |
+|---|---|
+| duplicate | PAWS, MRPC, VitaminC, IteraTeR |
+| refinement | WikiAtomicEdits, MultiNLI |
+| update | VitaminC revisions, WikiFactDiff |
+| contradiction | VitaminC, synthetic VitaminC pairs, MultiNLI |
+
+Rows are split by source page/document so no group appears in two splits.
+
+**Shortcut audit.** A blind logistic regression on 7 surface features (length, word overlap, "?", …) should score ~25% on balanced data. It scored 83.5% on the first build; after cleaning (drop Quora, length band, overlap floor for contradictions, add PAWS/MRPC) it scores 70.9%. The rest is partly real: a refinement *is* longer.
+
+**Domain shift.** Development accuracy (489 writes):
+
+| Training data | Dev accuracy |
+|---|---|
+| Public corpora only | 45.0% |
+| + PAWS and MRPC | 59.5% |
+| *Regex + LLM baseline* | *65.2%* |
+| + generator writes (1 batch) | 84.3% |
+| + generator writes (2 batches) | **88.8%** |
+
+Generator writes never use the evaluation seed. The generator has only 26 topics, so every training write on a test-half topic was removed (18 of the 19 test topics overlapped).
+
+**Dev / test split.** The 1000 seed-2026 writes are split by memory key: 489 dev, 511 test. Every choice used dev. Test was scored twice: once without the margin (86.1% accuracy, but 51.8% of contradictions let through) and once with it.
+
+**Margin sweep (dev).** Rule fixed before the sweep: smallest margin that lets through ≤ ~15% of contradictions.
+
+| Margin | Accuracy | Contradictions let through | True updates blocked |
+|---|---|---|---|
+| 0 | 88.8% | 58.5% | 7.0% |
+| 1 | 90.4% | 38.5% | 11.3% |
+| 2 | 92.0% | 20.0% | 14.8% |
+| **3** | **89.6%** | **13.8%** | **28.7%** |
+| 4 | 86.9% | 3.1% | 46.1% |
+| 5 | 81.8% | 0% | 69.6% |
+
+Full reasoning: DECISIONS.md D25–D33.
 
 ---
 
@@ -113,10 +188,16 @@ The marker is now mildly *anti*-correlated with the class it was written to dete
 ```bash
 python -m venv .venv
 .venv/Scripts/activate          # Windows;  source .venv/bin/activate on Unix
-pip install -r requirements.txt
+pip install -r requirements.txt   # includes torch + transformers for the trained model
 ```
 
-To regenerate the corpus or run the LLM adjudicator you need an API key. Copy `.env.example` to `.env` and fill in one provider:
+**Get the trained model.** The weights are 567 MB, above GitHub's file limit, so they are not in the repo. Download `slow_stage_v3b.zip` from **[ADD MODEL LINK HERE]** and extract it so this file exists:
+
+```
+models/slow_stage_v3b/config.json
+```
+
+The LLM slow path and corpus regeneration need an API key. Copy `.env.example` to `.env` and fill in one provider:
 
 ```
 WARDEN_LLM_PROVIDER=groq
@@ -125,22 +206,26 @@ GROQ_API_KEY=your-key-here
 
 Groq, Gemini, OpenRouter, Mistral and local Ollama are supported (any OpenAI-compatible endpoint). `.env` is gitignored — **never commit it**.
 
-Generated text and adjudicator decisions are cached under `data/`, so **the published results reproduce offline with no key at all**.
+Generated text and LLM decisions are cached under `data/`, so **all published results and demos reproduce offline with no key at all**.
 
 ## Running
 
 ```bash
-pytest tests/ -q                     # 87 tests
+pytest tests/ -q                      # unit tests (the model test is skipped if models/ is missing)
 
-python -m warden.demo m1             #This is an example to run a single module.
-python -m warden.demo all            # per-module live demo, offline, seconds
-python -m warden.demo m5fix          # the benchmark defect, before vs after
+python -m warden.eval_model           # trained model on all 1000 writes, offline, ~4 min on CPU
+                                      # -> results/model_fastpath/metrics.json + writes.csv
+
+python -m warden.demo m7              # two agents; every write judged by the trained model
+python -m warden.demo m7llm           # same, plus the LLM slow path for doubtful updates
+python -m warden.demo m1              # any single module: m1 m2 m3 m4 m5 m5fix m6 m7
+python -m warden.demo all             # every module demo in order
 
 python -m warden.generate_results --corpus llm --oracle llm \
-    --n-writes 1000 --num-keys 40 --seed 2026
+    --n-writes 1000 --num-keys 40 --seed 2026     # regex + LLM baseline figures
 ```
 
-`--corpus {template,llm}` selects the workload; `--oracle {llm,stub}` selects the adjudicator. `stub` is the ablation arm — the policy *"just trust the change-language"* — and the stub-vs-llm gap is what isolates the value of escalation.
+`m7llm` prints, for each write, which path decided it and the update–contradiction gap. New LLM answers are saved to `data/llm_oracle_cache.json`, so after one online run the demo is fully offline.
 
 ## Module map
 
@@ -148,31 +233,38 @@ python -m warden.generate_results --corpus llm --oracle llm \
 |---|---|---|
 | M1 | `store.py` | versioned in-memory store; full history, nothing overwritten |
 | M2 | `facts.py` | extracts dates, numeric magnitudes, negation |
-| M3 | `classifier.py` | fast path + LLM escalation; `CosineOnlyClassifier` ablation |
+| M3 | `classifier.py` | regex fast path + LLM escalation (baseline); `LLMOracle`; `CosineOnlyClassifier` ablation |
+| M3 | `model_classifier.py` | **trained DeBERTa fast path with update margin** |
 | M4 | `gate.py` | maps class → action, writes to the store |
 | M5 | `workload.py`, `domains.py`, `renderers.py`, `llm_workload.py` | labelled synthetic workload |
-| M6 | `harness.py`, `metrics.py`, `results_gen.py`, `generate_results.py` | evaluation and figures |
+| M6 | `harness.py`, `metrics.py`, `results_gen.py`, `generate_results.py`, `eval_model.py` | evaluation and figures |
 | M7 | `agents.py`, `gateway.py` | two LangGraph agents writing through the public API |
 
-All published numbers derive from one frozen 12-column log, `results/writes.csv`:
+All published numbers derive from frozen 12-column logs (`results/writes.csv`, `results/model_fastpath/writes.csv`):
 
 ```
 ts, config, write_id, key, true_class, predicted_class, action,
 is_false, version_read, version_at_commit, classify_ms, escalated
 ```
 
+The figures in `results/*.png` are from the regex + LLM baseline.
+
 ## Limitations
 
-- **M7 agent claims are hardcoded**, not LLM-generated. The agents exercise the gateway API and demonstrate a visible block; they are not autonomous. Labelled directly on `results/scene_agents.png`.
-- **The classifier is evaluated on the labelled pair**, not on live store contents. Because the gate blocks writes, the store diverges from the generator's ground truth, and labels defined against the generator's value become invalid. Pinning the input costs realism and buys a well-posed measurement (29.9% vs 64.8% on the same classifier — see DECISIONS.md D24).
-- **Sequential writes only.** `version_read` / `version_at_commit` are logged for future concurrency work but nothing currently reads them.
-- **Escalated latency is inflated** by free-tier rate limiting (1.6 s median, 30 s p95); a paid tier measures ~700 ms.
+- **One generator.** Training writes and test writes come from the same generator, so these are in-distribution numbers. The topic filter makes the test harder but does not remove this.
+- **False refinements and plausible false updates.** A wrong detail, or a false change written in real change language, cannot be caught from the two sentences alone. This needs an outside fact source.
+- **The margin moves between splits.** True updates blocked: 28.7% on dev, 42.6% on test.
+- **M7 agent claims are hardcoded**, not LLM-generated. The agents exercise the gateway API; they are not autonomous.
+- **The classifier is evaluated on the labelled pair**, not on live store contents (see DECISIONS.md D24).
+- **Sequential writes only.** `version_read` / `version_at_commit` are logged for future concurrency work but nothing reads them yet.
 
 ## DECISIONS.md
 
-Every deviation, ambiguity and bug is logged in [`DECISIONS.md`](DECISIONS.md) — 24 entries, including four bugs that would each have silently corrupted published numbers:
+Every deviation, ambiguity and bug is logged in [`DECISIONS.md`](DECISIONS.md). D1–D24 cover the regex + LLM system, including four bugs that would each have silently corrupted published numbers:
 
 - a reasoning model returning empty strings that poisoned **26% of a corpus**
 - a negation regex missing typographic apostrophes, blocking **~60% of honest writes**
 - an evaluation flaw where blocked writes invalidated later labels, costing **35 accuracy points**
 - a fabricated `time.sleep(0.002)` that made two latency targets pass for a hardcoded string
+
+D25–D33 cover the trained fast path: data sources and mapping, the shortcut audit, domain shift, the topic filter, the margin rule, final results, and a cache-flush bug in the corpus generator.
