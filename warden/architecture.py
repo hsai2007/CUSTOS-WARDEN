@@ -62,15 +62,25 @@ def build():
     box(ax, 34, 69, 30, 21, "", "", OWNER_A)
     ax.text(49, 88.0, "M3  Classifier", ha="center", fontsize=11, weight="bold", color="#1a1a1a")
     ax.text(49, 86.0, "classifier.py", ha="center", fontsize=8.5, style="italic", color="#444")
-    box(ax, 36.5, 78.5, 12.5, 6, "Fast path", "facts + regex", "#ffffff", 8.5)
-    box(ax, 50.5, 78.5, 12, 6, "Cosine", "embeddings", "#ffffff", 8.5)
-    box(ax, 36.5, 71, 26, 6, "Escalation oracle", "StubOracle  |  LLMOracle", "#ffffff", 8.5)
+    # The two-tier split is the central design claim: the cheap tier must
+    # absorb almost all traffic, so only genuinely ambiguous writes cost an
+    # LLM call. Measured shares are shown so the claim is checkable.
+    box(ax, 36.5, 78.5, 12.5, 6, "Fast path", "facts + regex", "#dff3e4", 8.5)
+    ax.text(42.75, 77.0, "93% · 0.12 ms", ha="center", fontsize=8,
+            weight="bold", color="#1e7a46")
+    box(ax, 50.5, 78.5, 12, 6, "Cosine", "ablation only", "#ffffff", 8.5)
+    box(ax, 36.5, 71.6, 26, 5.4, "Escalation oracle", "LLMOracle (default) | StubOracle", "#fde2e2", 8.5)
+    ax.text(49.5, 70.3, "7% escalated · 1.6 s — the ambiguous band only",
+            ha="center", fontsize=8, weight="bold", color="#a03232")
 
     box(ax, 70, 82, 25, 7.5, "M2  Fact extractor", "facts.py  ·  dates/numbers/negation", OWNER_A)
     box(ax, 70, 72, 25, 7.5, "Embeddings", "embeddings.py  ·  MiniLM", OWNER_A)
     box(ax, 70, 62, 25, 7.5, "LLM client", "llm_client.py  ·  shared", NEUTRAL)
 
-    box(ax, 34, 58, 30, 7.5, "M7  Agent layer", "agents.py · LangGraph · demo only", OWNER_B)
+    # M7 is neither product nor harness: it demonstrates the public API and
+    # feeds NO metric. Drawn neutral so it isn't mistaken for either owner.
+    box(ax, 34, 57.6, 30, 7.5, "M7  Agent layer",
+        "agents.py · LangGraph · demo only, feeds no metric", NEUTRAL)
 
     # ------------------------------------------------------------- the seam --
     box(ax, 22, 45.5, 56, 7, "FROZEN WRITE LOG  —  results/writes.csv  (12 columns)",

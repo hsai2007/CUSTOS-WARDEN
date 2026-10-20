@@ -1,0 +1,58 @@
+{
+  "model_dir": "D:\\CUSTOS\\models\\slow_stage_v3b",
+  "margin": 3.0,
+  "seed": 2026,
+  "elapsed_s": 233.4,
+  "writes_per_s": 4.46,
+  "all": {
+    "writes": 1000,
+    "accuracy": 0.873,
+    "duplicate_f1": 0.955810147299509,
+    "refinement_f1": 0.9553158705701079,
+    "update_f1": 0.7292225201072386,
+    "contradiction_f1": 0.7356948228882835,
+    "macro_f1": 0.8440108402162847,
+    "contradictions_let_through_as_update": 0.08108108108108109,
+    "updates_wrongly_blocked_as_contradiction": 0.36574074074074076,
+    "false_facts_surviving": 0.23316062176165803,
+    "honest_writes_wrongly_blocked": 0.09169764560099132,
+    "classify_ms_p50_p95": [
+      200.09880000725389,
+      352.167884953087
+    ]
+  },
+  "dev": {
+    "writes": 489,
+    "accuracy": 0.8936605316973415,
+    "duplicate_f1": 0.964169381107492,
+    "refinement_f1": 0.9774919614147911,
+    "update_f1": 0.7878787878787878,
+    "contradiction_f1": 0.728395061728395,
+    "macro_f1": 0.8644837980323665,
+    "contradictions_let_through_as_update": 0.07692307692307693,
+    "updates_wrongly_blocked_as_contradiction": 0.3130434782608696,
+    "false_facts_surviving": 0.189873417721519,
+    "honest_writes_wrongly_blocked": 0.08536585365853659,
+    "classify_ms_p50_p95": [
+      201.33399998303503,
+      351.89009996829554
+    ]
+  },
+  "test": {
+    "writes": 511,
+    "accuracy": 0.8532289628180039,
+    "duplicate_f1": 0.9473684210526316,
+    "refinement_f1": 0.9349112426035504,
+    "update_f1": 0.6628571428571428,
+    "contradiction_f1": 0.7414634146341463,
+    "macro_f1": 0.8216500552868677,
+    "contradictions_let_through_as_update": 0.08433734939759036,
+    "updates_wrongly_blocked_as_contradiction": 0.42574257425742573,
+    "false_facts_surviving": 0.2631578947368421,
+    "honest_writes_wrongly_blocked": 0.0982367758186398,
+    "classify_ms_p50_p95": [
+      198.38650000747293,
+      354.0614999947138
+    ]
+  }
+}

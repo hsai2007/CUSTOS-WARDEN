@@ -6,3 +6,5 @@ numpy
 langgraph
 anthropic
 pytest
+transformers
+torch

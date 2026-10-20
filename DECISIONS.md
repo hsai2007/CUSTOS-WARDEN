@@ -493,3 +493,123 @@ after both fixes.
 deleted, so provider tests passed or failed depending on whether the developer had
 a key on disk. `tests/test_m5_providers.py` now has an autouse fixture that
 neutralizes `load_dotenv` and clears the relevant variables.
+
+## D25 — The regex fast path is replaced by a trained model (reviewer request)
+
+At review the faculty asked for the regex fact-gate to be replaced by a trained
+model. New design: `ModelFastPath` (`warden/model_classifier.py`) classifies
+every write with a fine-tuned `cross-encoder/nli-deberta-v3-small` (4-label
+head). The LLM stays the slow path, but is now only consulted for *doubtful
+updates* (D30). `FastPathEscalator` is kept unchanged as the baseline arm.
+Training ran on Kaggle (T4 GPU); the model is not committed (D31).
+
+## D26 — Real training data: sources and label mapping
+
+Six public sources, mapped to the four classes (text_a = stored, text_b = incoming):
+
+| Class | Source | Rule |
+|---|---|---|
+| update | VitaminC flagging, `factual` | replace-only diff, new span ≤ 6 words, reverts dropped |
+| update | WikiFactDiff (legacy config) | `is_replace`, one obsolete → one new object, filled into `update_prompt` |
+| contradiction | VitaminC real `REFUTES` | evidence → claim |
+| contradiction | VitaminC synthetic | real FEVER sentence → human-edited false copy (`is_synthetic`, never in test) |
+| contradiction | MultiNLI label 2 | premise → hypothesis |
+| duplicate | VitaminC flagging, `not factual` | swap ≤ 3 words, no digits, no negation |
+| duplicate | IteraTeR human | fluency/style edits, digits unchanged |
+| duplicate | PAWS (label 1), MRPC (label 1) | real paraphrases |
+| refinement | WikiAtomicEdits English insertions | inserted phrase ≥ 3 words, `facts.py` says facts unchanged |
+| refinement | MultiNLI label 0 reversed | hypothesis → premise |
+
+VitaminC revision order was verified, not assumed: "as of YEAR" is later in
+`sent_b` in 75–97% of checkable rows and running totals are larger in 86–93%.
+The backwards rows are Wikipedia reverts (e.g. `As of April 2017 -> March 2016`)
+and are dropped. WikiAtomicEdits' Google Storage link failed from Kaggle; the
+identical data was read from Hugging Face's `refs/convert/parquet` copy (first
+300k rows). Quora was dropped (D27).
+
+## D27 — Shortcut audit: the data was separable by shape, fixed before training
+
+Same failure class as D17. A logistic regression on 7 surface features (lengths,
+length ratio, word overlap, "?" , digits) — no words read — was trained on the
+built dataset. Guessing = 0.25.
+
+| Step | Shortcut accuracy |
+|---|---|
+| first build | 0.835 (99% of Quora duplicates end in "?"; contradictions half-length) |
+| drop Quora, add VitaminC synthetic, length band 0.75–1.33 (refinement 1.05–2.0) | 0.801 |
+| overlap floor ≥ 0.5 for contradiction/refinement | 0.779 |
+| add PAWS + MRPC paraphrase duplicates | 0.709 |
+
+The residual is partly real (a refinement *is* longer). Also fixed: group
+leakage — every group (Wikipedia page, document, question, entity) is forced
+into one split; train/test group overlap = 0.
+
+## D28 — Domain shift: Wikipedia-trained models fail on WARDEN sentences
+
+Seed-2026 corpus split by memory key into DEV (489) and TEST (511) (D29).
+
+| Model | WARDEN dev accuracy |
+|---|---|
+| v1 Wikipedia/NLI data | 45.0% (duplicate recall 5.8% — LLM rewordings looked like refinements) |
+| v2 + PAWS/MRPC | 59.5% |
+| current pipeline (regex + Qwen, replayed from cache) | 65.2% |
+
+Confidence thresholds did not help: v2 is confidently wrong (accuracy on
+writes with confidence ≥ 0.9 was only 67%). The gap is the data, not the model.
+
+## D29 — WARDEN-style training writes, with a topic filter
+
+Seeds 11 and 12 (1,200 writes each, same generator, `num_keys=40`) were added to
+training. Seed 2026 is never trained on. Because the generator has only 26
+subjects, 18 of 19 seed-2026 subjects reappear in other seeds; every training
+write whose subject occurs in the TEST half was therefore removed, so the test
+measures unseen topics. Rows were added on top of the v2 data (not replacing it).
+
+Learning curve on dev: v3a (seed 11) 84.3% → v3b (seeds 11+12) 88.8%. +4.5
+points; more seeds were judged not worth another day of Groq quota.
+
+## D30 — Update margin = 3, chosen on dev by a rule stated beforehand
+
+v3b's main error was letting contradictions through as updates (58.5% on dev),
+which in WARDEN means applying false facts. Rule stated *before* the sweep:
+smallest margin (update logit − contradiction logit) that brings
+contradiction-leak to ≤ ~15% on dev. Sweep: 0 → 58.5%, 1 → 38.5%, 2 → 20.0%,
+**3 → 13.8%** (dev accuracy 89.6%, updates blocked 28.7%). Margin 2 had the best
+dev accuracy (92.0%) but failed the rule. The locked test half was scored once
+with margin 0 and once with margin 3; both are reported.
+
+## D31 — Final results on the locked TEST half (511 writes, unseen topics)
+
+| | Regex + Qwen (current) | v3b, margin 3 |
+|---|---|---|
+| Accuracy | 64.2% | **85.3%** |
+| Macro F1 | 0.574 | **0.822** |
+| Contradictions let through as update | 12.0% | **8.4%** |
+| Honest updates blocked | 73.3% | **42.6%** |
+| Duplicate / Refinement F1 | 0.760 / 0.778 | 0.947 / 0.935 |
+| Update / Contradiction F1 | 0.234 / 0.524 | 0.663 / 0.741 |
+
+Notes: the margin transferred unevenly (updates blocked 28.7% on dev vs 42.6% on
+test). v3b was retrained once after a Kaggle session expired; no-margin test
+accuracy moved 84.5% → 86.1% (GPU non-determinism). Train and test share one
+generator, so these are in-distribution numbers for this corpus. Cost: ~91 ms
+per write on Kaggle CPU, ~170–185 ms on the development laptop, versus 0.12 ms
+for the regex — no API calls and no rate limits. Reproduce locally with
+`python -m warden.eval_model` (cache-only, writes to `results/model_fastpath/`).
+The 568 MB model lives in `models/slow_stage_v3b/` and is gitignored.
+
+## D32 — Bug: corpus generator loses work on rate limits (not yet fixed in code)
+
+`LLMRenderer.render` flushes the cache only when `calls_made % 25 == 0`, but
+`calls_made` counts retries, so it can jump over the multiple and never flush;
+`main()` also never flushes on an exception. A 429 therefore discarded every
+call since the last flush (observed: ~200 calls lost). Workaround used for
+seeds 11–13: a wrapper that flushes every 10 renders and in a `finally` block.
+
+## D33 — Correction to D10: update vs contradiction is partly learnable from text
+
+D10 and the review discussion said no classifier could beat trusting the
+supersession language. With in-domain training data, v3b reaches 0.93–0.97
+update recall. What remains true: contradiction stays the hardest class, and a
+fabricated update written in genuine change-language still cannot be detected
+without an external fact source.
